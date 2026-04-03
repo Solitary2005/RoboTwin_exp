@@ -97,6 +97,7 @@ class Camera:
             cam_pos = np.array(camera_info["position"])
             vector = np.random.randn(3)
             random_dir = vector / np.linalg.norm(vector)
+            # 默认配置有修改相机平移的功能
             cam_pos = cam_pos + random_dir * np.random.uniform(low=0, high=random_head_camera_dis)
             cam_forward = np.array(camera_info["forward"]) / np.linalg.norm(np.array(camera_info["forward"]))
             cam_left = np.array(camera_info["left"]) / np.linalg.norm(np.array(camera_info["left"]))

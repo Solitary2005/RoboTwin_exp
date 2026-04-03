@@ -168,6 +168,8 @@ if __name__ == "__main__":
     expert_data_num = args.expert_data_num
 
     load_dir = os.path.join("../../data", str(task_name), str(setting))
+    # DATA_DIR="/inspire/hdd/project/robot-reasoning/public/RHOS/xianchao/RoboDiag/robotwin/RoboTwin/data"
+    # load_dir = os.path.join(DATA_DIR, str(task_name), str(setting))
 
     begin = 0
     print(f'read data from path:{os.path.join("data", load_dir)}')

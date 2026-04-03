@@ -523,7 +523,7 @@ class TrainConfig:
     # device memory will be reduced but training could potentially be slower.
     # eg. if total device is 4 and fsdp devices is 2; then the model will shard to 2 devices and run
     # data parallel between 2 groups of devices.
-    fsdp_devices: int = 1
+    fsdp_devices: int = 2
 
     @property
     def assets_dirs(self) -> pathlib.Path:
@@ -557,7 +557,7 @@ _CONFIGS = [
         name="pi05_aloha_full_base",
         model=pi0_config.Pi0Config(pi05=True),
         data=LeRobotAlohaDataConfig(
-            repo_id="your_repo_id",
+            repo_id="pi0_50task_clean",
             repack_transforms=_transforms.Group(inputs=[
                 _transforms.RepackTransform({
                     "images": {
@@ -577,7 +577,7 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=20_000,
         batch_size=64,
-        fsdp_devices=1,  # refer line 359
+        fsdp_devices=2,  # refer line 359
     ),
     # pi0_base by lora
     TrainConfig(

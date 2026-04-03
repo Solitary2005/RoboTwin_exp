@@ -18,6 +18,7 @@ from datetime import datetime
 import importlib
 import argparse
 import pdb
+import time
 
 from generate_episode_instructions import *
 
@@ -161,9 +162,12 @@ def main(usr_args):
     suc_nums = []
     test_num = 100
     topk = 1
-
+    
+    load_start = time.time()
     model = get_model(usr_args)
-    st_seed, suc_num = eval_policy(task_name,
+    model_load_time = time.time() - load_start
+    
+    st_seed, suc_num, epi_res = eval_policy(task_name,
                                    TASK_ENV,
                                    args,
                                    model,
@@ -174,13 +178,26 @@ def main(usr_args):
     suc_nums.append(suc_num)
 
     topk_success_rate = sorted(suc_nums, reverse=True)[:topk]
-
-    file_path = os.path.join(save_dir, f"_result.txt")
+    # 每个任务会测100条数据
+    # 现在需要记录每条数据  是否成功  记录每条数据的 推理时间
+    # 每条数据是否成功 和 其对应的推理时间 写入save_dir/_info.txt
+    info_file_path = os.path.join(save_dir, f"_info.txt") 
+    with open(info_file_path, "w") as f:
+        for ep_idx, ep in enumerate(epi_res):
+            f.write(f"Data {ep_idx} | Success: {ep['success']} | Inference Time: {ep['infer_time']:.6f}s\n")
+    
+    
+    # 这个 txt 保存 这100条数据的平均成功率 和 这100条数据的平均推理时间
+    avg_infer_time = np.mean([ep["infer_time"] for ep in epi_res]) if epi_res else 0
+    file_path = os.path.join(save_dir, f"_result.txt")  
     with open(file_path, "w") as file:
         file.write(f"Timestamp: {current_time}\n\n")
         file.write(f"Instruction Type: {instruction_type}\n\n")
+        file.write(f"Model Load Time: {model_load_time:.6f}s\n")
+        file.write(f"Average Inference Time: {avg_infer_time:.6f}s\n")
         # file.write(str(task_reward) + '\n')
         file.write("\n".join(map(str, np.array(suc_nums) / test_num)))
+        
 
     print(f"Data has been saved to {file_path}")
     # return task_reward
@@ -204,6 +221,8 @@ def eval_policy(task_name,
     now_id = 0
     succ_seed = 0
     suc_test_seed_list = []
+    
+    epi_res = []
 
     policy_name = args["policy_name"]
     eval_func = eval_function_decorator(policy_name, "eval")
@@ -290,12 +309,24 @@ def eval_policy(task_name,
 
         succ = False
         reset_func(model)
+        
+        infer_start_time = time.time()
+        
         while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
             observation = TASK_ENV.get_obs()
             eval_func(TASK_ENV, model, observation)
             if TASK_ENV.eval_success:
                 succ = True
                 break
+            
+        infer_duration = time.time() - infer_start_time
+        
+        epi_res.append({
+            "success": succ,
+            "infer_time": infer_duration
+        })
+        
+        
         # task_total_reward += TASK_ENV.episode_score
         if TASK_ENV.eval_video_path is not None:
             TASK_ENV._del_eval_video_ffmpeg()
@@ -321,7 +352,7 @@ def eval_policy(task_name,
         # TASK_ENV._take_picture()
         now_seed += 1
 
-    return now_seed, TASK_ENV.suc
+    return now_seed, TASK_ENV.suc, epi_res
 
 
 def parse_args_and_config():

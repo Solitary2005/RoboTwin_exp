@@ -15,6 +15,7 @@ from openpi.training import config as _config
 from openpi.training import data_loader as _data_loader
 
 import cv2
+import os
 from PIL import Image
 
 from openpi.models import model as _model

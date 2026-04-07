@@ -73,6 +73,36 @@ class Camera:
         self.static_camera_info_list = kwags["left_embodiment_config"]["static_camera_list"]
         self.static_camera_num = len(self.static_camera_info_list)
 
+        # Camera random
+        '''
+        From RoboTwin 2.0-Plus in https://arxiv.org/pdf/2603.22078v2
+        C1
+        距离缩放 ∈ [0.85, 1.0] x 原始值 (仅head)
+
+        C2
+        方位角/俯仰角扰动(±10°) 和 ±10%距离变化（默认禁用）
+
+        C3
+        偏航/俯仰/滚转 随机方向上的各自[0°, 5°]
+        '''
+        camera_kw = kwags.get("camera", {})
+        self.enable_head_camera_random = camera_kw.get("enable_head_camera_random", False)
+        # C1
+        self.head_cam_distance_scale_range = camera_kw.get("head_cam_distance_scale_range", [1.0, 1.0])
+
+        # C2
+        self.head_cam_azimuth_deg = float(camera_kw.get("head_cam_azimuth_deg", 0.0))
+        self.head_cam_elevation_deg = float(camera_kw.get("head_cam_elevation_deg", 0.0))
+        self.head_cam_distance_ratio = float(camera_kw.get("head_cam_distance_ratio", 0.0))
+
+        # C3
+        self.head_cam_yaw_deg = float(camera_kw.get("head_cam_yaw_deg", 0.0))
+        self.head_cam_pitch_deg = float(camera_kw.get("head_cam_pitch_deg", 0.0))
+        self.head_cam_roll_deg = float(camera_kw.get("head_cam_roll_deg", 0.0))
+
+        
+
+
     def load_camera(self, scene):
         """
         Add cameras and set camera parameters
@@ -89,26 +119,177 @@ class Camera:
         # sensor_mount_actor = scene.create_actor_builder().build_kinematic()
 
         # camera_args = get_camera_config()
-        def create_camera(camera_info, random_head_camera_dis=0):
+
+        # def create_camera(camera_info, random_head_camera_dis=0, is_head_camera=False):
+        #     if camera_info["type"] not in camera_args.keys():
+        #         raise ValueError(f"Camera type {camera_info['type']} not supported")
+
+        #     camera_config = camera_args[camera_info["type"]]
+        #     cam_pos = np.array(camera_info["position"])
+        #     vector = np.random.randn(3)
+        #     random_dir = vector / np.linalg.norm(vector)
+        #     cam_pos = cam_pos + random_dir * np.random.uniform(low=0, high=random_head_camera_dis)
+        #     cam_forward = np.array(camera_info["forward"]) / np.linalg.norm(np.array(camera_info["forward"]))
+        #     cam_left = np.array(camera_info["left"]) / np.linalg.norm(np.array(camera_info["left"]))
+        #     up = np.cross(cam_forward, cam_left)
+        #     mat44 = np.eye(4)
+        #     mat44[:3, :3] = np.stack([cam_forward, cam_left, up], axis=1)
+        #     mat44[:3, 3] = cam_pos
+
+        #     # ========================= sensor camera =========================
+        #     # sensor_config = StereoDepthSensorConfig()
+        #     # sensor_config.rgb_resolution = (camera_config['w'], camera_config['h'])
+
+        #     camera = scene.add_camera(
+        #         name=camera_info["name"],
+        #         width=camera_config["w"],
+        #         height=camera_config["h"],
+        #         fovy=np.deg2rad(camera_config["fovy"]),
+        #         near=near,
+        #         far=far,
+        #     )
+        #     camera.entity.set_pose(sapien.Pose(mat44))
+
+        #     # ========================= sensor camera =========================
+        #     # sensor_camera = StereoDepthSensor(
+        #     #     sensor_config,
+        #     #     sensor_mount_actor,
+        #     #     sapien.Pose(mat44)
+        #     # )
+        #     # camera.entity.set_pose(sapien.Pose(camera_info['position']))
+        #     # return camera, sensor_camera, camera_config
+        #     return camera, camera_config
+
+        def create_camera(camera_info, random_head_camera_dis=0, is_head_camera=False):
             if camera_info["type"] not in camera_args.keys():
                 raise ValueError(f"Camera type {camera_info['type']} not supported")
 
-            camera_config = camera_args[camera_info["type"]]
-            cam_pos = np.array(camera_info["position"])
-            vector = np.random.randn(3)
-            random_dir = vector / np.linalg.norm(vector)
-            # 默认配置有修改相机平移的功能
-            cam_pos = cam_pos + random_dir * np.random.uniform(low=0, high=random_head_camera_dis)
-            cam_forward = np.array(camera_info["forward"]) / np.linalg.norm(np.array(camera_info["forward"]))
-            cam_left = np.array(camera_info["left"]) / np.linalg.norm(np.array(camera_info["left"]))
-            up = np.cross(cam_forward, cam_left)
-            mat44 = np.eye(4)
-            mat44[:3, :3] = np.stack([cam_forward, cam_left, up], axis=1)
-            mat44[:3, 3] = cam_pos
+            def _norm(v):
+                v = np.asarray(v, dtype=np.float64)
+                n = np.linalg.norm(v)
+                if n < 1e-8:
+                    return v
+                return v / n
 
-            # ========================= sensor camera =========================
-            # sensor_config = StereoDepthSensorConfig()
-            # sensor_config.rgb_resolution = (camera_config['w'], camera_config['h'])
+            def _rand_deg(max_deg):
+                if max_deg <= 0:
+                    return 0.0
+                return np.deg2rad(np.random.uniform(-max_deg, max_deg))
+
+            def _orthonormalize(R):
+                '''把矩阵近似正交化'''
+                U, _, Vt = np.linalg.svd(R)
+                R = U @ Vt
+                if np.linalg.det(R) < 0:
+                    U[:, -1] *= -1
+                    R = U @ Vt
+                return R
+
+            camera_config = camera_args[camera_info["type"]]
+
+            base_pos = np.array(camera_info["position"])
+            base_forward = _norm(np.array(camera_info["forward"]))
+            base_left = _norm(np.array(camera_info["left"]))
+            base_up = _norm(np.cross(base_forward, base_left))
+
+            # default orientation from config
+            R_default = np.stack([base_forward, base_left, base_up], axis=1)
+            R_default = _orthonormalize(R_default)
+
+            cam_pos = base_pos.copy()
+            R = R_default.copy()
+
+            use_head_random = bool(is_head_camera and self.enable_head_camera_random)
+
+            if use_head_random:
+                # ---------------- C1/C2: position perturbation around auto anchor ----------------
+                # auto anchor from default camera pose + viewing ray intersecting table plane
+                # 参考 base_task
+                table_z = 0.74 + self.table_z_bias
+                if abs(base_forward[2]) > 1e-6:
+                    t_hit = (table_z - base_pos[2]) / base_forward[2]
+                    if t_hit > 0:
+                        anchor = base_pos + t_hit * base_forward
+                    else:
+                        anchor = base_pos + 0.8 * base_forward
+                else:
+                    anchor = base_pos + 0.8 * base_forward
+
+                rel = base_pos - anchor
+                rel_norm = np.linalg.norm(rel)
+                if rel_norm < 1e-8:
+                    rel = np.array([0.0, -0.8, 0.2], dtype=np.float64)
+                    rel_norm = np.linalg.norm(rel)
+
+                # spherical coords
+                az = np.arctan2(rel[1], rel[0])
+                el = np.arctan2(rel[2], np.linalg.norm(rel[:2]))
+                r = rel_norm
+
+                # C1 distance scaling
+                smin, smax = self.head_cam_distance_scale_range
+                if smin > smax:
+                    smin, smax = smax, smin
+                r = r * np.random.uniform(smin, smax)
+
+                # C2 azimuth/elevation + distance ratio perturb
+                az += np.deg2rad(np.random.uniform(-self.head_cam_azimuth_deg, self.head_cam_azimuth_deg))
+                el += np.deg2rad(np.random.uniform(-self.head_cam_elevation_deg, self.head_cam_elevation_deg))
+                el = np.clip(el, np.deg2rad(-85.0), np.deg2rad(85.0))
+
+                if self.head_cam_distance_ratio > 0:
+                    ratio = np.random.uniform(-self.head_cam_distance_ratio, self.head_cam_distance_ratio)
+                    r = r * (1.0 + ratio)
+
+                rel_new = np.array([
+                    r * np.cos(el) * np.cos(az),
+                    r * np.cos(el) * np.sin(az),
+                    r * np.sin(el),
+                ], dtype=np.float64)
+                cam_pos = anchor + rel_new
+
+                # keep old isotropic translation jitter compatibility
+                if random_head_camera_dis > 0:
+                    vec = _norm(np.random.randn(3))
+                    cam_pos = cam_pos + vec * np.random.uniform(low=0, high=random_head_camera_dis)
+
+                # recompute look-at orientation (look at anchor)
+                f = _norm(anchor - cam_pos)
+                world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+                if abs(np.dot(f, world_up)) > 0.99:
+                    world_up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+                l = _norm(np.cross(world_up, f))
+                u = _norm(np.cross(f, l))
+                R = np.stack([f, l, u], axis=1)
+                R = _orthonormalize(R)
+
+                # ---------------- C3: orientation perturbation ----------------
+                yaw = _rand_deg(self.head_cam_yaw_deg)      # around local up
+                pitch = _rand_deg(self.head_cam_pitch_deg)  # around local left
+                roll = _rand_deg(self.head_cam_roll_deg)    # around local forward
+
+                f_axis = R[:, 0]
+                l_axis = R[:, 1]
+                u_axis = R[:, 2]
+
+                R_yaw = t3d.axangles.axangle2mat(u_axis, yaw)
+                R_pitch = t3d.axangles.axangle2mat(l_axis, pitch)
+                R_roll = t3d.axangles.axangle2mat(f_axis, roll)
+
+                R = R_yaw @ R_pitch @ R_roll @ R
+                R = _orthonormalize(R)
+
+            else:
+                # original behavior (position-only random jitter)
+                if random_head_camera_dis > 0:
+                    vector = np.random.randn(3)
+                    random_dir = vector / (np.linalg.norm(vector) + 1e-12)
+                    cam_pos = cam_pos + random_dir * np.random.uniform(low=0, high=random_head_camera_dis)
+                R = R_default
+
+            mat44 = np.eye(4, dtype=np.float64)
+            mat44[:3, :3] = R
+            mat44[:3, 3] = cam_pos
 
             camera = scene.add_camera(
                 name=camera_info["name"],
@@ -119,16 +300,9 @@ class Camera:
                 far=far,
             )
             camera.entity.set_pose(sapien.Pose(mat44))
-
-            # ========================= sensor camera =========================
-            # sensor_camera = StereoDepthSensor(
-            #     sensor_config,
-            #     sensor_mount_actor,
-            #     sapien.Pose(mat44)
-            # )
-            # camera.entity.set_pose(sapien.Pose(camera_info['position']))
-            # return camera, sensor_camera, camera_config
             return camera, camera_config
+
+
 
         # ================================= wrist camera =================================
         if self.collect_wrist_camera:
@@ -187,7 +361,8 @@ class Camera:
                     camera_info["type"] = self.head_camera_type
                     # camera, sensor_camera, camera_config = create_camera(camera_info)
                     camera, camera_config = create_camera(camera_info,
-                                                          random_head_camera_dis=self.random_head_camera_dis)
+                                                          random_head_camera_dis=self.random_head_camera_dis,
+                                                          is_head_camera=True)
                     self.static_camera_list.append(camera)
                     self.static_camera_name.append(camera_info["name"])
                     # self.static_sensor_camera_list.append(sensor_camera)

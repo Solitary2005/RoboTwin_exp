@@ -1,0 +1,61 @@
+========== Camera Info ==========
+[2026-04-07 21:56:53.444] [svulkan2] [error] OIDN Error: unsupported device type: CUDA
+
+[left_camera]
+  resolution: 320x240
+  fovx/fovy (deg): 48.09 / 37.00
+  position xyz: [0. 0. 0.]
+  quaternion wxyz: [1. 0. 0. 0.]
+  intrinsic K:
+[[358.64218   0.      160.     ]
+ [  0.      358.64218 120.     ]
+ [  0.        0.        1.     ]]
+  extrinsic (cv):
+[[ 0. -1.  0.  0.]
+ [ 0.  0. -1.  0.]
+ [ 1.  0.  0.  0.]]
+[2026-04-07 21:56:53.468] [svulkan2] [error] OIDN Error: invalid handle
+
+[right_camera]
+  resolution: 320x240
+  fovx/fovy (deg): 48.09 / 37.00
+  position xyz: [0. 0. 0.]
+  quaternion wxyz: [1. 0. 0. 0.]
+  intrinsic K:
+[[358.64218   0.      160.     ]
+ [  0.      358.64218 120.     ]
+ [  0.        0.        1.     ]]
+  extrinsic (cv):
+[[ 0. -1.  0.  0.]
+ [ 0.  0. -1.  0.]
+ [ 1.  0.  0.  0.]]
+[2026-04-07 21:56:53.484] [svulkan2] [error] OIDN Error: invalid handle
+
+[head_camera]
+  resolution: 320x240
+  fovx/fovy (deg): 48.09 / 37.00
+  position xyz: [ 0.09204461 -0.10537811  1.0735475 ]
+  quaternion wxyz: [ 0.6324555  -0.31622776  0.31622776  0.6324555 ]
+  intrinsic K:
+[[358.64218   0.      160.     ]
+ [  0.      358.64218 120.     ]
+ [  0.        0.        1.     ]]
+  extrinsic (cv):
+[[ 1.          0.          0.         -0.09204459]
+ [ 0.         -0.8        -0.6         0.55982596]
+ [ 0.          0.6        -0.8         0.92206484]]
+[2026-04-07 21:56:53.522] [svulkan2] [error] OIDN Error: invalid handle
+
+[front_camera]
+  resolution: 320x240
+  fovx/fovy (deg): 48.09 / 37.00
+  position xyz: [ 0.   -0.45  0.85]
+  quaternion wxyz: [ 0.7062289  -0.03522361  0.03522361  0.706229  ]
+  intrinsic K:
+[[358.64218   0.      160.     ]
+ [  0.      358.64218 120.     ]
+ [  0.        0.        1.     ]]
+  extrinsic (cv):
+[[ 1.0000001e+00  1.1920929e-07 -3.7252903e-09  5.9604645e-08]
+ [ 3.7252903e-09 -9.9503726e-02 -9.9503720e-01  8.0100501e-01]
+ [-1.1920929e-07  9.9503726e-01 -9.9503726e-02  5.3234494e-01]]

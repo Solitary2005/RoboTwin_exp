@@ -99,7 +99,9 @@ class Camera:
         self.head_cam_yaw_deg = float(camera_kw.get("head_cam_yaw_deg", 0.0))
         self.head_cam_pitch_deg = float(camera_kw.get("head_cam_pitch_deg", 0.0))
         self.head_cam_roll_deg = float(camera_kw.get("head_cam_roll_deg", 0.0))
-        
+
+        # # info
+        # self.cam_random_params = {}
         # Head camera visibility / occlusion check
         self.enable_head_camera_occlusion_check = bool(camera_kw.get("enable_head_camera_occlusion_check", False))
         self.head_camera_occlusion_valid_ratio_min = float(camera_kw.get("head_camera_occlusion_valid_ratio_min", 0.15))
@@ -157,6 +159,7 @@ class Camera:
         self._head_dyn_follow_noise_rot_deg = np.zeros(3, dtype=np.float64)
         self._head_dyn_last_logged_pose = None
         self._head_dyn_hand_weight_ema = np.array([0.5, 0.5], dtype=np.float64)
+
 
     def load_camera(self, scene):
         """
@@ -490,7 +493,7 @@ class Camera:
                     # )
             else:
                 # camera, sensor_camera, camera_config = create_camera(camera_info)
-                camera, camera_config = create_camera(camera_info)
+                camera, camera_config, self.cam_random_params = create_camera(camera_info)
                 self.static_camera_list.append(camera)
                 self.static_camera_name.append(camera_info["name"])
                 # self.static_sensor_camera_list.append(sensor_camera)

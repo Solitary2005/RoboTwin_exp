@@ -170,6 +170,8 @@ class Base_Task(gym.Env):
         }
         self.info["head_camera_visibility"] = self.head_camera_visibility_info
         self.info["info"] = {}
+        
+        
 
         self.stage_success_tag = False
 
@@ -428,6 +430,7 @@ class Base_Task(gym.Env):
         self.cameras.load_camera(self.scene)
         self.scene.step()  # run a physical step
         self.scene.update_render()  # sync pose from SAPIEN to renderer
+        # return self.cameras.cam_random_params
 
     # =========================================================== Sapien ===========================================================
 

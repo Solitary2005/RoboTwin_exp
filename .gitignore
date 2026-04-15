@@ -10,9 +10,17 @@ viewer_show.*
 eval_video/
 task_config/
 **/.DS_Store
+pkg
+.datacache
+
+# data
+training_data
 
 # eval result
 eval_result/
+eval_result*
+results
+eval_res*
 
 # Code Generation
 assets/*

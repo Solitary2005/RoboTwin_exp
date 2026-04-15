@@ -99,9 +99,64 @@ class Camera:
         self.head_cam_yaw_deg = float(camera_kw.get("head_cam_yaw_deg", 0.0))
         self.head_cam_pitch_deg = float(camera_kw.get("head_cam_pitch_deg", 0.0))
         self.head_cam_roll_deg = float(camera_kw.get("head_cam_roll_deg", 0.0))
-
         
+        # Head camera visibility / occlusion check
+        self.enable_head_camera_occlusion_check = bool(camera_kw.get("enable_head_camera_occlusion_check", False))
+        self.head_camera_occlusion_valid_ratio_min = float(camera_kw.get("head_camera_occlusion_valid_ratio_min", 0.15))
+        self.head_camera_occlusion_near_ratio_max = float(camera_kw.get("head_camera_occlusion_near_ratio_max", 0.60))
+        self.head_camera_occlusion_near_depth_m = float(camera_kw.get("head_camera_occlusion_near_depth_m", 0.1))
+        
+        # Head camera dynamic randomization inside one episode
+        self.enable_head_camera_dynamic_random = bool(camera_kw.get("enable_head_camera_dynamic_random", False))
+        self.head_cam_dyn_min_interval_frames = int(camera_kw.get("head_cam_dyn_min_interval_frames", 5))
+        self.head_cam_dyn_max_interval_frames = int(camera_kw.get("head_cam_dyn_max_interval_frames", 30))
+        self.head_cam_dyn_trigger_prob = float(camera_kw.get("head_cam_dyn_trigger_prob", 0.15))
 
+        self.head_cam_dyn_trans_step_max_m = camera_kw.get("head_cam_dyn_trans_step_max_m", [0.01, 0.01, 0.005])
+        self.head_cam_dyn_rot_step_max_deg = camera_kw.get("head_cam_dyn_rot_step_max_deg", [2.0, 2.0, 2.0])
+        self.head_cam_dyn_trans_abs_bound_m = camera_kw.get("head_cam_dyn_trans_abs_bound_m", [0.03, 0.03, 0.02])
+        self.head_cam_dyn_rot_abs_bound_deg = camera_kw.get("head_cam_dyn_rot_abs_bound_deg", [8.0, 8.0, 8.0])
+
+        self.head_cam_dyn_transition_frames = int(camera_kw.get("head_cam_dyn_transition_frames", 4))
+        self.head_cam_dyn_smooth_profile = str(camera_kw.get("head_cam_dyn_smooth_profile", "cosine"))
+        self.head_cam_dyn_anchor_mode = str(camera_kw.get("head_cam_dyn_anchor_mode", "episode_init"))
+
+        # Dynamic mode: random_interval (legacy) | action_follow (human-like)
+        self.head_cam_dyn_mode = str(camera_kw.get("head_cam_dyn_mode", "action_follow"))
+        self.head_cam_dyn_follow_alpha_min = float(camera_kw.get("head_cam_dyn_follow_alpha_min", 0.02))
+        self.head_cam_dyn_follow_alpha_max = float(camera_kw.get("head_cam_dyn_follow_alpha_max", 0.18))
+        self.head_cam_dyn_motion_norm = float(camera_kw.get("head_cam_dyn_motion_norm", 0.015))
+        self.head_cam_dyn_focus_z_bias = float(camera_kw.get("head_cam_dyn_focus_z_bias", 0.0))
+        self.head_cam_dyn_hand_weight_temperature = float(camera_kw.get("head_cam_dyn_hand_weight_temperature", 0.03))
+        self.head_cam_dyn_hand_weight_bias = float(camera_kw.get("head_cam_dyn_hand_weight_bias", 0.15))
+        self.head_cam_dyn_hand_weight_smooth = float(camera_kw.get("head_cam_dyn_hand_weight_smooth", 0.35))
+
+        self.head_cam_dyn_noise_trans_max_m = camera_kw.get("head_cam_dyn_noise_trans_max_m", [0.002, 0.002, 0.001])
+        self.head_cam_dyn_noise_rot_max_deg = camera_kw.get("head_cam_dyn_noise_rot_max_deg", [0.8, 0.8, 0.8])
+        self.head_cam_dyn_noise_update_prob = float(camera_kw.get("head_cam_dyn_noise_update_prob", 0.1))
+
+        self.head_cam_dyn_log_min_trans_m = float(camera_kw.get("head_cam_dyn_log_min_trans_m", 0.0015))
+        self.head_cam_dyn_log_min_rot_deg = float(camera_kw.get("head_cam_dyn_log_min_rot_deg", 0.5))
+        
+        self.head_cam_dyn_occlusion_reject = bool(camera_kw.get("head_cam_dyn_occlusion_reject", True))
+        self.head_cam_dyn_max_resample = int(camera_kw.get("head_cam_dyn_max_resample", 5))
+        
+        # runtime record for dataset logging
+        self.head_camera_episode_record = {}
+        self.head_camera_dynamic_events = []
+
+        # runtime states for dynamic camera
+        self.scene = None
+        self._head_dyn_last_trigger_frame = -1
+        self._head_dyn_transition = None
+        self._head_dyn_base_pose = None
+        self._head_dyn_forced_change_count = 0
+        self._head_dyn_random_change_count = 0
+        self._head_dyn_follow_base_rel = None
+        self._head_dyn_follow_noise_pos = np.zeros(3, dtype=np.float64)
+        self._head_dyn_follow_noise_rot_deg = np.zeros(3, dtype=np.float64)
+        self._head_dyn_last_logged_pose = None
+        self._head_dyn_hand_weight_ema = np.array([0.5, 0.5], dtype=np.float64)
 
     def load_camera(self, scene):
         """
@@ -200,14 +255,26 @@ class Camera:
             R = R_default.copy()
 
             use_head_random = bool(is_head_camera and self.enable_head_camera_random)
+            #record
+            sampled_distance_scale = 1.0
+            sampled_azimuth_offset_deg = 0.0
+            sampled_elevation_offset_deg = 0.0
+            sampled_distance_ratio = 0.0
+            sampled_yaw_deg = 0.0
+            sampled_pitch_deg = 0.0
+            sampled_roll_deg = 0.0
+            sampled_translation_jitter = 0.0
 
             if use_head_random:
                 # ---------------- C1/C2: position perturbation around auto anchor ----------------
                 # auto anchor from default camera pose + viewing ray intersecting table plane
                 # 参考 base_task
-                table_z = 0.74 + self.table_z_bias
+                table_z = 0.74 + self.table_z_bias 
+                #桌面高度table_height 0.74，
+                # R(t) = P + t × F为视线，t是距离参数，相机位置 P = (px, py, pz) 出发，方向 F = (fx, fy, fz)
+                #R_z(t) = pz + t × fz = 0.74 视线和桌子平面的交点
                 if abs(base_forward[2]) > 1e-6:
-                    t_hit = (table_z - base_pos[2]) / base_forward[2]
+                    t_hit = (table_z - base_pos[2]) / base_forward[2] 
                     if t_hit > 0:
                         anchor = base_pos + t_hit * base_forward
                     else:
@@ -222,23 +289,34 @@ class Camera:
                     rel_norm = np.linalg.norm(rel)
 
                 # spherical coords
-                az = np.arctan2(rel[1], rel[0])
-                el = np.arctan2(rel[2], np.linalg.norm(rel[:2]))
-                r = rel_norm
+                az = np.arctan2(rel[1], rel[0]) #水平面方位角
+                el = np.arctan2(rel[2], np.linalg.norm(rel[:2])) #与水平面夹角的俯仰角
+                r = rel_norm #相机到锚点的距离
 
                 # C1 distance scaling
                 smin, smax = self.head_cam_distance_scale_range
                 if smin > smax:
                     smin, smax = smax, smin
-                r = r * np.random.uniform(smin, smax)
+                # r = r * np.random.uniform(smin, smax)
+                sampled_distance_scale = float(np.random.uniform(smin, smax))
+                r = r * sampled_distance_scale
 
                 # C2 azimuth/elevation + distance ratio perturb
-                az += np.deg2rad(np.random.uniform(-self.head_cam_azimuth_deg, self.head_cam_azimuth_deg))
-                el += np.deg2rad(np.random.uniform(-self.head_cam_elevation_deg, self.head_cam_elevation_deg))
+                sampled_azimuth_offset_deg = float(
+                    np.random.uniform(-self.head_cam_azimuth_deg, self.head_cam_azimuth_deg)
+                )
+                sampled_elevation_offset_deg = float(
+                    np.random.uniform(-self.head_cam_elevation_deg, self.head_cam_elevation_deg)
+                )
+                az += np.deg2rad(sampled_azimuth_offset_deg)
+                el += np.deg2rad(sampled_elevation_offset_deg)
+                # az += np.deg2rad(np.random.uniform(-self.head_cam_azimuth_deg, self.head_cam_azimuth_deg))
+                # el += np.deg2rad(np.random.uniform(-self.head_cam_elevation_deg, self.head_cam_elevation_deg))
                 el = np.clip(el, np.deg2rad(-85.0), np.deg2rad(85.0))
 
                 if self.head_cam_distance_ratio > 0:
                     ratio = np.random.uniform(-self.head_cam_distance_ratio, self.head_cam_distance_ratio)
+                    sampled_distance_ratio = float(ratio)
                     r = r * (1.0 + ratio)
 
                 rel_new = np.array([
@@ -251,7 +329,9 @@ class Camera:
                 # keep old isotropic translation jitter compatibility
                 if random_head_camera_dis > 0:
                     vec = _norm(np.random.randn(3))
-                    cam_pos = cam_pos + vec * np.random.uniform(low=0, high=random_head_camera_dis)
+                    # cam_pos = cam_pos + vec * np.random.uniform(low=0, high=random_head_camera_dis)
+                    sampled_translation_jitter = float(np.random.uniform(low=0, high=random_head_camera_dis))
+                    cam_pos = cam_pos + vec * sampled_translation_jitter
 
                 # recompute look-at orientation (look at anchor)
                 f = _norm(anchor - cam_pos)
@@ -264,19 +344,22 @@ class Camera:
                 R = _orthonormalize(R)
 
                 # ---------------- C3: orientation perturbation ----------------
-                yaw = _rand_deg(self.head_cam_yaw_deg)      # around local up
-                pitch = _rand_deg(self.head_cam_pitch_deg)  # around local left
-                roll = _rand_deg(self.head_cam_roll_deg)    # around local forward
+                yaw = _rand_deg(self.head_cam_yaw_deg)      # around local up（z），左右摇头
+                pitch = _rand_deg(self.head_cam_pitch_deg)  # around local left（y），上下俯仰
+                roll = _rand_deg(self.head_cam_roll_deg)    # around local forward（x），左右倾斜
+                sampled_yaw_deg = float(np.rad2deg(yaw))
+                sampled_pitch_deg = float(np.rad2deg(pitch))
+                sampled_roll_deg = float(np.rad2deg(roll))
 
-                f_axis = R[:, 0]
-                l_axis = R[:, 1]
-                u_axis = R[:, 2]
+                u_axis = R[:, 2] #Up，z
+                l_axis = R[:, 1] #Left，y
+                f_axis = R[:, 0] #Forward，x
 
                 R_yaw = t3d.axangles.axangle2mat(u_axis, yaw)
                 R_pitch = t3d.axangles.axangle2mat(l_axis, pitch)
                 R_roll = t3d.axangles.axangle2mat(f_axis, roll)
 
-                R = R_yaw @ R_pitch @ R_roll @ R
+                R = R_yaw @ R_pitch @ R_roll @ R  #从右向左，先x，再y，最后z
                 R = _orthonormalize(R)
 
             else:
@@ -284,7 +367,9 @@ class Camera:
                 if random_head_camera_dis > 0:
                     vector = np.random.randn(3)
                     random_dir = vector / (np.linalg.norm(vector) + 1e-12)
-                    cam_pos = cam_pos + random_dir * np.random.uniform(low=0, high=random_head_camera_dis)
+                    # cam_pos = cam_pos + random_dir * np.random.uniform(low=0, high=random_head_camera_dis)
+                    sampled_translation_jitter = float(np.random.uniform(low=0, high=random_head_camera_dis))
+                    cam_pos = cam_pos + random_dir * sampled_translation_jitter
                 R = R_default
 
             mat44 = np.eye(4, dtype=np.float64)
@@ -300,9 +385,28 @@ class Camera:
                 far=far,
             )
             camera.entity.set_pose(sapien.Pose(mat44))
+            
+            if is_head_camera:
+                camera_pose = camera.entity.get_pose()
+                self.head_camera_episode_record = {
+                    "head_camera_randomization_sampled": {
+                        "used_head_camera_random": bool(use_head_random),
+                        "distance_scale": float(sampled_distance_scale),
+                        "azimuth_offset_deg": float(sampled_azimuth_offset_deg),
+                        "elevation_offset_deg": float(sampled_elevation_offset_deg),
+                        "distance_ratio": float(sampled_distance_ratio),
+                        "yaw_deg": float(sampled_yaw_deg),
+                        "pitch_deg": float(sampled_pitch_deg),
+                        "roll_deg": float(sampled_roll_deg),
+                        "translation_jitter": float(sampled_translation_jitter),
+                    },
+                    "head_camera_final_pose": {
+                        "position": np.asarray(camera_pose.p, dtype=np.float64).tolist(),
+                        "quaternion_wxyz": np.asarray(camera_pose.q, dtype=np.float64).tolist(),
+                        "rotation_matrix": np.asarray(mat44[:3, :3], dtype=np.float64).tolist(),
+                    },
+                }
             return camera, camera_config
-
-
 
         # ================================= wrist camera =================================
         if self.collect_wrist_camera:
@@ -445,6 +549,535 @@ class Camera:
         world_cam_mat44[:3, :3] = np.stack([world_cam_forward, world_cam_left, world_cam_up], axis=1)
         world_cam_mat44[:3, 3] = world_cam_pos
         self.world_camera2.entity.set_pose(sapien.Pose(world_cam_mat44))
+        
+        self.reset_head_camera_dynamic_runtime()
+        
+    def reset_head_camera_dynamic_runtime(self):
+        self._head_dyn_last_trigger_frame = -1
+        self._head_dyn_transition = None
+        self._head_dyn_forced_change_count = 0
+        self._head_dyn_random_change_count = 0
+        self.head_camera_dynamic_events = []
+        self._head_dyn_follow_base_rel = None
+        self._head_dyn_follow_noise_pos = np.zeros(3, dtype=np.float64)
+        self._head_dyn_follow_noise_rot_deg = np.zeros(3, dtype=np.float64)
+        self._head_dyn_last_logged_pose = None
+        self._head_dyn_hand_weight_ema = np.array([0.5, 0.5], dtype=np.float64)
+
+        if self.head_camera_id is None or not self.collect_head_camera:
+            self._head_dyn_base_pose = None
+            return
+
+        head_camera = self.static_camera_list[self.head_camera_id]
+        pose = head_camera.entity.get_pose()
+        self._head_dyn_base_pose = {
+            "p": np.asarray(pose.p, dtype=np.float64).copy(),
+            "q": np.asarray(pose.q, dtype=np.float64).copy(),
+        }
+        self._head_dyn_last_logged_pose = {
+            "p": np.asarray(pose.p, dtype=np.float64).copy(),
+            "q": np.asarray(pose.q, dtype=np.float64).copy(),
+        }
+
+    def _normalize3(self, value, cast=float):
+        if isinstance(value, (list, tuple, np.ndarray)):
+            if len(value) >= 3:
+                return np.array([cast(value[0]), cast(value[1]), cast(value[2])], dtype=np.float64)
+            elif len(value) == 1:
+                v = cast(value[0])
+                return np.array([v, v, v], dtype=np.float64)
+        v = cast(value)
+        return np.array([v, v, v], dtype=np.float64)
+
+    def _smooth_alpha(self, t):
+        t = float(np.clip(t, 0.0, 1.0))
+        profile = self.head_cam_dyn_smooth_profile.lower()
+        if profile == "linear":
+            return t
+        if profile == "cubic":
+            return 3.0 * t * t - 2.0 * t * t * t
+        # default cosine
+        return 0.5 * (1.0 - np.cos(np.pi * t))
+
+    def _slerp_wxyz(self, q0, q1, alpha):
+        q0 = np.asarray(q0, dtype=np.float64)
+        q1 = np.asarray(q1, dtype=np.float64)
+        q0 = q0 / (np.linalg.norm(q0) + 1e-12)
+        q1 = q1 / (np.linalg.norm(q1) + 1e-12)
+
+        dot = float(np.dot(q0, q1))
+        if dot < 0.0:
+            q1 = -q1
+            dot = -dot
+
+        if dot > 0.9995:
+            q = q0 + alpha * (q1 - q0)
+            return q / (np.linalg.norm(q) + 1e-12)
+
+        theta_0 = np.arccos(np.clip(dot, -1.0, 1.0))
+        sin_theta_0 = np.sin(theta_0)
+        theta = theta_0 * alpha
+        sin_theta = np.sin(theta)
+        s0 = np.sin(theta_0 - theta) / (sin_theta_0 + 1e-12)
+        s1 = sin_theta / (sin_theta_0 + 1e-12)
+        q = s0 * q0 + s1 * q1
+        return q / (np.linalg.norm(q) + 1e-12)
+
+    def _quat_angle_deg(self, q_from, q_to):
+        R_from = t3d.quaternions.quat2mat(np.asarray(q_from, dtype=np.float64))
+        R_to = t3d.quaternions.quat2mat(np.asarray(q_to, dtype=np.float64))
+        R_rel = R_to @ R_from.T
+        trace_val = np.trace(R_rel)
+        cos_theta = np.clip((trace_val - 1.0) * 0.5, -1.0, 1.0)
+        return float(np.rad2deg(np.arccos(cos_theta)))
+
+    def _look_at_quat_wxyz(self, cam_pos, target_pos):
+        cam_pos = np.asarray(cam_pos, dtype=np.float64)
+        target_pos = np.asarray(target_pos, dtype=np.float64)
+        f = target_pos - cam_pos
+        n = np.linalg.norm(f)
+        if n < 1e-8:
+            if self._head_dyn_base_pose is not None:
+                return np.asarray(self._head_dyn_base_pose["q"], dtype=np.float64)
+            return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        f = f / n
+        world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        if abs(np.dot(f, world_up)) > 0.99:
+            world_up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        l = np.cross(world_up, f)
+        l = l / (np.linalg.norm(l) + 1e-12)
+        u = np.cross(f, l)
+        u = u / (np.linalg.norm(u) + 1e-12)
+        R = np.stack([f, l, u], axis=1)
+        return t3d.quaternions.mat2quat(R)
+
+    def _try_apply_dynamic_pose(self, frame_idx, reason, target_p, target_q, sample_meta=None):
+        head_camera = self.static_camera_list[self.head_camera_id]
+        cur_pose = head_camera.entity.get_pose()
+        cur_p = np.asarray(cur_pose.p, dtype=np.float64)
+        cur_q = np.asarray(cur_pose.q, dtype=np.float64)
+
+        head_camera.entity.set_pose(sapien.Pose(target_p, target_q))
+        if self.scene is not None:
+            self.scene.update_render()
+
+        if self.head_cam_dyn_occlusion_reject:
+            ok, metrics = self._check_head_camera_visibility_internal()
+            if not ok:
+                head_camera.entity.set_pose(sapien.Pose(cur_p, cur_q))
+                if self.scene is not None:
+                    self.scene.update_render()
+                self.head_camera_dynamic_events.append({
+                    "trigger_frame": int(frame_idx),
+                    "reason": str(reason),
+                    "accepted": False,
+                    "occlusion_check": metrics,
+                    "candidate_pose": {
+                        "position": np.asarray(target_p, dtype=np.float64).tolist(),
+                        "quaternion_wxyz": np.asarray(target_q, dtype=np.float64).tolist(),
+                    },
+                })
+                return False
+
+        # logging sparse keyframes only
+        if self._head_dyn_last_logged_pose is None:
+            should_log = True
+        else:
+            dp = np.linalg.norm(np.asarray(target_p, dtype=np.float64) - self._head_dyn_last_logged_pose["p"])
+            dq = self._quat_angle_deg(self._head_dyn_last_logged_pose["q"], target_q)
+            should_log = (dp >= self.head_cam_dyn_log_min_trans_m) or (dq >= self.head_cam_dyn_log_min_rot_deg)
+
+        if should_log:
+            event = {
+                "trigger_frame": int(frame_idx),
+                "reason": str(reason),
+                "accepted": True,
+                "final_pose": {
+                    "position": np.asarray(target_p, dtype=np.float64).tolist(),
+                    "quaternion_wxyz": np.asarray(target_q, dtype=np.float64).tolist(),
+                },
+            }
+            if sample_meta is not None:
+                event["sample_meta"] = sample_meta
+            self.head_camera_dynamic_events.append(event)
+            self._head_dyn_last_logged_pose = {
+                "p": np.asarray(target_p, dtype=np.float64).copy(),
+                "q": np.asarray(target_q, dtype=np.float64).copy(),
+            }
+        return True
+    
+    def _check_head_camera_visibility_internal(self):
+        if self.head_camera_id is None or not self.collect_head_camera:
+            metrics = {
+                "enabled": bool(self.enable_head_camera_occlusion_check),
+                "checked": False,
+                "ok": True,
+                "reason": "head_camera_not_collected",
+            }
+            return True, metrics
+
+        if not self.enable_head_camera_occlusion_check:
+            metrics = {
+                "enabled": False,
+                "checked": False,
+                "ok": True,
+                "reason": "disabled_by_config",
+            }
+            return True, metrics
+
+        head_camera = self.static_camera_list[self.head_camera_id]
+        head_camera.take_picture()
+        position = head_camera.get_picture("Position")
+
+        valid_mask = position[..., 3] < 1
+        depth = -position[..., 2]
+
+        total_pixels = int(valid_mask.size)
+        valid_pixels = int(np.count_nonzero(valid_mask))
+        valid_ratio = float(valid_pixels / max(total_pixels, 1))
+
+        near_depth = self.head_camera_occlusion_near_depth_m
+        near_pixels = int(np.count_nonzero(valid_mask & (depth < near_depth)))
+        near_ratio = float(near_pixels / max(valid_pixels, 1))
+
+        valid_ratio_ok = valid_ratio >= self.head_camera_occlusion_valid_ratio_min
+        near_ratio_ok = near_ratio <= self.head_camera_occlusion_near_ratio_max
+        ok = bool(valid_ratio_ok and near_ratio_ok)
+
+        metrics = {
+            "enabled": True,
+            "checked": True,
+            "ok": ok,
+            "threshold": {
+                "valid_ratio_min": float(self.head_camera_occlusion_valid_ratio_min),
+                "near_ratio_max": float(self.head_camera_occlusion_near_ratio_max),
+                "near_depth_m": float(self.head_camera_occlusion_near_depth_m),
+            },
+            "measured": {
+                "total_pixels": total_pixels,
+                "valid_pixels": valid_pixels,
+                "valid_ratio": valid_ratio,
+                "near_pixels": near_pixels,
+                "near_ratio": near_ratio,
+            },
+        }
+        return ok, metrics
+
+    def _sample_head_dynamic_target_pose(self):
+        head_camera = self.static_camera_list[self.head_camera_id]
+        cur_pose = head_camera.entity.get_pose()
+        cur_p = np.asarray(cur_pose.p, dtype=np.float64)
+        cur_q = np.asarray(cur_pose.q, dtype=np.float64)
+
+        if self._head_dyn_base_pose is None:
+            base_p = cur_p.copy()
+            base_q = cur_q.copy()
+        else:
+            base_p = self._head_dyn_base_pose["p"]
+            base_q = self._head_dyn_base_pose["q"]
+
+        anchor_mode = self.head_cam_dyn_anchor_mode.lower()
+        if anchor_mode == "previous":
+            ref_p = cur_p
+            ref_q = cur_q
+        else:
+            ref_p = base_p
+            ref_q = base_q
+
+        trans_step_max = self._normalize3(self.head_cam_dyn_trans_step_max_m)
+        rot_step_max_deg = self._normalize3(self.head_cam_dyn_rot_step_max_deg)
+
+        delta_p = np.random.uniform(-trans_step_max, trans_step_max)
+
+        R_ref = t3d.quaternions.quat2mat(ref_q)
+        yaw = np.deg2rad(np.random.uniform(-rot_step_max_deg[0], rot_step_max_deg[0]))
+        pitch = np.deg2rad(np.random.uniform(-rot_step_max_deg[1], rot_step_max_deg[1]))
+        roll = np.deg2rad(np.random.uniform(-rot_step_max_deg[2], rot_step_max_deg[2]))
+
+        f_axis = R_ref[:, 0]
+        l_axis = R_ref[:, 1]
+        u_axis = R_ref[:, 2]
+
+        R_yaw = t3d.axangles.axangle2mat(u_axis, yaw)
+        R_pitch = t3d.axangles.axangle2mat(l_axis, pitch)
+        R_roll = t3d.axangles.axangle2mat(f_axis, roll)
+        R_target = R_yaw @ R_pitch @ R_roll @ R_ref
+
+        p_target = ref_p + delta_p
+
+        # absolute bound around episode init pose
+        trans_abs_bound = self._normalize3(self.head_cam_dyn_trans_abs_bound_m)
+        p_target = base_p + np.clip(p_target - base_p, -trans_abs_bound, trans_abs_bound)
+
+        rot_abs_bound_deg = self._normalize3(self.head_cam_dyn_rot_abs_bound_deg)
+        R_base = t3d.quaternions.quat2mat(base_q)
+        R_rel = R_target @ R_base.T
+        rx, ry, rz = t3d.euler.mat2euler(R_rel, axes='sxyz')
+        rx = np.clip(rx, -np.deg2rad(rot_abs_bound_deg[0]), np.deg2rad(rot_abs_bound_deg[0]))
+        ry = np.clip(ry, -np.deg2rad(rot_abs_bound_deg[1]), np.deg2rad(rot_abs_bound_deg[1]))
+        rz = np.clip(rz, -np.deg2rad(rot_abs_bound_deg[2]), np.deg2rad(rot_abs_bound_deg[2]))
+        R_rel_clamped = t3d.euler.euler2mat(rx, ry, rz, axes='sxyz')
+        R_target = R_rel_clamped @ R_base
+
+        q_target = t3d.quaternions.mat2quat(R_target)
+        return {
+            "p": np.asarray(p_target, dtype=np.float64),
+            "q": np.asarray(q_target, dtype=np.float64),
+            "delta": {
+                "translation_xyz_m": np.asarray(delta_p, dtype=np.float64).tolist(),
+                "rotation_yaw_pitch_roll_deg": [float(np.rad2deg(yaw)), float(np.rad2deg(pitch)), float(np.rad2deg(roll))],
+            },
+        }
+
+    def _try_build_head_dynamic_transition(self, frame_idx, reason):
+        head_camera = self.static_camera_list[self.head_camera_id]
+        cur_pose = head_camera.entity.get_pose()
+        start_p = np.asarray(cur_pose.p, dtype=np.float64)
+        start_q = np.asarray(cur_pose.q, dtype=np.float64)
+
+        max_retry = max(1, int(self.head_cam_dyn_max_resample))
+        reject_attempts = 0
+        reject_metrics = None
+
+        for _ in range(max_retry):
+            sampled = self._sample_head_dynamic_target_pose()
+            target_p = sampled["p"]
+            target_q = sampled["q"]
+
+            head_camera.entity.set_pose(sapien.Pose(target_p, target_q))
+            if self.scene is not None:
+                self.scene.update_render()
+
+            if self.head_cam_dyn_occlusion_reject:
+                ok, metrics = self._check_head_camera_visibility_internal()
+                if not ok:
+                    reject_attempts += 1
+                    reject_metrics = metrics
+                    head_camera.entity.set_pose(sapien.Pose(start_p, start_q))
+                    if self.scene is not None:
+                        self.scene.update_render()
+                    continue
+            else:
+                ok, metrics = True, {
+                    "enabled": False,
+                    "checked": False,
+                    "ok": True,
+                    "reason": "dynamic_occlusion_reject_disabled",
+                }
+
+            # restore now, will be applied smoothly in transition
+            head_camera.entity.set_pose(sapien.Pose(start_p, start_q))
+            if self.scene is not None:
+                self.scene.update_render()
+
+            duration = max(1, int(self.head_cam_dyn_transition_frames))
+            event = {
+                "trigger_frame": int(frame_idx),
+                "reason": str(reason),
+                "transition_frames": duration,
+                "start_pose": {
+                    "position": start_p.tolist(),
+                    "quaternion_wxyz": start_q.tolist(),
+                },
+                "target_pose": {
+                    "position": np.asarray(target_p, dtype=np.float64).tolist(),
+                    "quaternion_wxyz": np.asarray(target_q, dtype=np.float64).tolist(),
+                },
+                "sampled_delta": sampled["delta"],
+                "occlusion_check": metrics,
+                "accepted": True,
+                "rejected_attempts": int(reject_attempts),
+            }
+
+            return {
+                "start_frame": int(frame_idx),
+                "duration": duration,
+                "start_p": start_p,
+                "start_q": start_q,
+                "target_p": np.asarray(target_p, dtype=np.float64),
+                "target_q": np.asarray(target_q, dtype=np.float64),
+                "event": event,
+            }
+
+        # all candidates rejected by occlusion
+        event = {
+            "trigger_frame": int(frame_idx),
+            "reason": str(reason),
+            "transition_frames": max(1, int(self.head_cam_dyn_transition_frames)),
+            "accepted": False,
+            "rejected_attempts": int(reject_attempts),
+            "occlusion_check": reject_metrics,
+        }
+        self.head_camera_dynamic_events.append(event)
+        return None
+
+    def _update_head_camera_dynamic_follow(self, frame_idx=0, motion_signal=None):
+        if motion_signal is None:
+            return
+
+        left_ee_pos = motion_signal.get("left_ee_pos", None)
+        right_ee_pos = motion_signal.get("right_ee_pos", None)
+        focus_target = motion_signal.get("focus_target", None)
+        if left_ee_pos is None or right_ee_pos is None:
+            return
+
+        left_ee_pos = np.asarray(left_ee_pos, dtype=np.float64)
+        right_ee_pos = np.asarray(right_ee_pos, dtype=np.float64)
+        focus_target = np.asarray(focus_target if focus_target is not None else (left_ee_pos + right_ee_pos) * 0.5, dtype=np.float64)
+        focus_target[2] += float(self.head_cam_dyn_focus_z_bias)
+
+        motion_intensity = float(motion_signal.get("motion_intensity", 0.0))
+        motion_intensity = float(np.clip(motion_intensity, 0.0, 1.0))
+
+        left_motion = float(motion_signal.get("left_motion", 0.0))
+        right_motion = float(motion_signal.get("right_motion", 0.0))
+        motion_scale = max(float(self.head_cam_dyn_motion_norm), 1e-6)
+        left_score = left_motion / motion_scale
+        right_score = right_motion / motion_scale
+        temp = max(float(self.head_cam_dyn_hand_weight_temperature), 1e-6)
+        score_delta = (left_score - right_score) / temp
+        dominant_left = 1.0 / (1.0 + np.exp(-score_delta))
+        dominant_right = 1.0 - dominant_left
+
+        base_bias = float(np.clip(self.head_cam_dyn_hand_weight_bias, 0.0, 0.49))
+        left_weight = dominant_left * (1.0 - 2.0 * base_bias) + base_bias
+        right_weight = dominant_right * (1.0 - 2.0 * base_bias) + base_bias
+        hand_weights = np.array([left_weight, right_weight], dtype=np.float64)
+        hand_weights = hand_weights / (np.sum(hand_weights) + 1e-12)
+
+        smooth = float(np.clip(self.head_cam_dyn_hand_weight_smooth, 0.0, 1.0))
+        self._head_dyn_hand_weight_ema = (1.0 - smooth) * self._head_dyn_hand_weight_ema + smooth * hand_weights
+        hand_weights = self._head_dyn_hand_weight_ema / (np.sum(self._head_dyn_hand_weight_ema) + 1e-12)
+
+        focus_target = hand_weights[0] * left_ee_pos + hand_weights[1] * right_ee_pos
+        focus_target[2] += float(self.head_cam_dyn_focus_z_bias)
+
+        head_camera = self.static_camera_list[self.head_camera_id]
+        cur_pose = head_camera.entity.get_pose()
+        cur_p = np.asarray(cur_pose.p, dtype=np.float64)
+        cur_q = np.asarray(cur_pose.q, dtype=np.float64)
+
+        if self._head_dyn_follow_base_rel is None:
+            self._head_dyn_follow_base_rel = cur_p - focus_target
+
+        # low-frequency micro-motion noise
+        if np.random.rand() < float(np.clip(self.head_cam_dyn_noise_update_prob, 0.0, 1.0)):
+            noise_pos_max = self._normalize3(self.head_cam_dyn_noise_trans_max_m)
+            noise_rot_max_deg = self._normalize3(self.head_cam_dyn_noise_rot_max_deg)
+            self._head_dyn_follow_noise_pos = np.random.uniform(-noise_pos_max, noise_pos_max)
+            self._head_dyn_follow_noise_rot_deg = np.random.uniform(-noise_rot_max_deg, noise_rot_max_deg)
+
+        base_rel = np.asarray(self._head_dyn_follow_base_rel, dtype=np.float64)
+        desired_p = focus_target + base_rel + self._head_dyn_follow_noise_pos
+
+        # absolute bound around episode init pose
+        if self._head_dyn_base_pose is not None:
+            base_p = self._head_dyn_base_pose["p"]
+            trans_abs_bound = self._normalize3(self.head_cam_dyn_trans_abs_bound_m)
+            desired_p = base_p + np.clip(desired_p - base_p, -trans_abs_bound, trans_abs_bound)
+
+        desired_q = self._look_at_quat_wxyz(desired_p, focus_target)
+        R_des = t3d.quaternions.quat2mat(desired_q)
+        yaw_n = np.deg2rad(self._head_dyn_follow_noise_rot_deg[0])
+        pitch_n = np.deg2rad(self._head_dyn_follow_noise_rot_deg[1])
+        roll_n = np.deg2rad(self._head_dyn_follow_noise_rot_deg[2])
+        f_axis = R_des[:, 0]
+        l_axis = R_des[:, 1]
+        u_axis = R_des[:, 2]
+        R_des = t3d.axangles.axangle2mat(u_axis, yaw_n) @ t3d.axangles.axangle2mat(l_axis, pitch_n) @ t3d.axangles.axangle2mat(f_axis, roll_n) @ R_des
+
+        if self._head_dyn_base_pose is not None:
+            base_q = self._head_dyn_base_pose["q"]
+            rot_abs_bound_deg = self._normalize3(self.head_cam_dyn_rot_abs_bound_deg)
+            R_base = t3d.quaternions.quat2mat(base_q)
+            R_rel = R_des @ R_base.T
+            rx, ry, rz = t3d.euler.mat2euler(R_rel, axes='sxyz')
+            rx = np.clip(rx, -np.deg2rad(rot_abs_bound_deg[0]), np.deg2rad(rot_abs_bound_deg[0]))
+            ry = np.clip(ry, -np.deg2rad(rot_abs_bound_deg[1]), np.deg2rad(rot_abs_bound_deg[1]))
+            rz = np.clip(rz, -np.deg2rad(rot_abs_bound_deg[2]), np.deg2rad(rot_abs_bound_deg[2]))
+            R_des = t3d.euler.euler2mat(rx, ry, rz, axes='sxyz') @ R_base
+
+        desired_q = t3d.quaternions.mat2quat(R_des)
+
+        alpha_min = float(np.clip(self.head_cam_dyn_follow_alpha_min, 0.0, 1.0))
+        alpha_max = float(np.clip(self.head_cam_dyn_follow_alpha_max, alpha_min, 1.0))
+        alpha = alpha_min + (alpha_max - alpha_min) * motion_intensity
+
+        new_p = cur_p * (1.0 - alpha) + desired_p * alpha
+        new_q = self._slerp_wxyz(cur_q, desired_q, alpha)
+
+        # optional occlusion reject and sparse logging
+        sample_meta = {
+            "motion_intensity": float(motion_intensity),
+            "alpha": float(alpha),
+            "focus_target": np.asarray(focus_target, dtype=np.float64).tolist(),
+            "left_hand_weight": float(hand_weights[0]),
+            "right_hand_weight": float(hand_weights[1]),
+            "left_motion": float(left_motion),
+            "right_motion": float(right_motion),
+            "dominant_hand": "left" if hand_weights[0] >= hand_weights[1] else "right",
+            "mode": "action_follow",
+        }
+        self._try_apply_dynamic_pose(frame_idx=frame_idx, reason="action_follow", target_p=new_p, target_q=new_q, sample_meta=sample_meta)
+    
+    def update_head_camera_dynamic(self, frame_idx=0, motion_signal=None):
+        if self.head_camera_id is None or not self.collect_head_camera:
+            return
+        if not self.enable_head_camera_dynamic_random:
+            return
+
+        frame_idx = int(frame_idx)
+        
+        mode = self.head_cam_dyn_mode.lower()
+        if mode == "action_follow":
+            self._update_head_camera_dynamic_follow(frame_idx=frame_idx, motion_signal=motion_signal)
+            return
+        
+        head_camera = self.static_camera_list[self.head_camera_id]
+
+        # ongoing smooth transition
+        if self._head_dyn_transition is not None:
+            trans = self._head_dyn_transition
+            elapsed = frame_idx - trans["start_frame"] + 1
+            alpha = self._smooth_alpha(elapsed / max(trans["duration"], 1))
+            p_now = trans["start_p"] * (1.0 - alpha) + trans["target_p"] * alpha
+            q_now = self._slerp_wxyz(trans["start_q"], trans["target_q"], alpha)
+            head_camera.entity.set_pose(sapien.Pose(p_now, q_now))
+
+            if elapsed >= trans["duration"]:
+                pose = head_camera.entity.get_pose()
+                trans["event"]["end_frame"] = int(frame_idx)
+                trans["event"]["final_pose"] = {
+                    "position": np.asarray(pose.p, dtype=np.float64).tolist(),
+                    "quaternion_wxyz": np.asarray(pose.q, dtype=np.float64).tolist(),
+                }
+                self.head_camera_dynamic_events.append(trans["event"])
+                self._head_dyn_transition = None
+            return
+
+        min_itv = max(0, int(self.head_cam_dyn_min_interval_frames))
+        max_itv = max(min_itv + 1, int(self.head_cam_dyn_max_interval_frames))
+        interval = frame_idx - int(self._head_dyn_last_trigger_frame)
+
+        should_trigger = False
+        reason = ""
+        if interval >= max_itv:
+            should_trigger = True
+            reason = "forced_by_max_interval"
+            self._head_dyn_forced_change_count += 1
+        elif interval >= min_itv:
+            if np.random.rand() < float(self.head_cam_dyn_trigger_prob):
+                should_trigger = True
+                reason = "random_trigger"
+                self._head_dyn_random_change_count += 1
+
+        if not should_trigger:
+            return
+
+        transition = self._try_build_head_dynamic_transition(frame_idx=frame_idx, reason=reason)
+        if transition is not None:
+            self._head_dyn_last_trigger_frame = frame_idx
+            self._head_dyn_transition = transition
 
     def update_picture(self):
         # camera
@@ -495,6 +1128,97 @@ class Camera:
         # res['head_sensor'] = res['head_camera']
         # print(res)
         return res
+
+    def get_head_camera_episode_record(self) -> dict:
+        if self.head_camera_id is None:
+            return {}
+
+        result = dict(self.head_camera_episode_record)
+        result["head_camera_dynamic_events"] = list(self.head_camera_dynamic_events)
+        result["head_camera_dynamic_summary"] = {
+            "forced_change_count": int(self._head_dyn_forced_change_count),
+            "random_change_count": int(self._head_dyn_random_change_count),
+            "accepted_change_count": int(sum(1 for e in self.head_camera_dynamic_events if e.get("accepted", False))),
+            "rejected_change_count": int(sum(1 for e in self.head_camera_dynamic_events if not e.get("accepted", False))),
+        }
+        try:
+            head_camera = self.static_camera_list[self.head_camera_id]
+            
+            result["head_camera_final_params"] = {
+                "intrinsic_cv": np.asarray(head_camera.get_intrinsic_matrix(), dtype=np.float64).tolist(),
+                "extrinsic_cv": np.asarray(head_camera.get_extrinsic_matrix(), dtype=np.float64).tolist(),
+                "cam2world_gl": np.asarray(head_camera.get_model_matrix(), dtype=np.float64).tolist(),
+            }
+        except Exception:
+            result["head_camera_final_params"] = {}
+
+        return result
+
+    def check_head_camera_visibility(self):
+        """
+        Check whether head camera frustum is severely occluded.
+        Returns:
+            ok (bool), metrics (dict)
+        """
+        # if self.head_camera_id is None or not self.collect_head_camera:
+        #     metrics = {
+        #         "enabled": bool(self.enable_head_camera_occlusion_check),
+        #         "checked": False,
+        #         "ok": True,
+        #         "reason": "head_camera_not_collected",
+        #     }
+        #     self.head_camera_episode_record["head_camera_visibility_check"] = metrics
+        #     return True, metrics
+
+        # if not self.enable_head_camera_occlusion_check:
+        #     metrics = {
+        #         "enabled": False,
+        #         "checked": False,
+        #         "ok": True,
+        #         "reason": "disabled_by_config",
+        #     }
+        #     self.head_camera_episode_record["head_camera_visibility_check"] = metrics
+        #     return True, metrics
+
+        # head_camera = self.static_camera_list[self.head_camera_id]
+        # head_camera.take_picture()
+        # position = head_camera.get_picture("Position")
+
+        # valid_mask = position[..., 3] < 1
+        # depth = -position[..., 2]
+
+        # total_pixels = int(valid_mask.size)
+        # valid_pixels = int(np.count_nonzero(valid_mask))
+        # valid_ratio = float(valid_pixels / max(total_pixels, 1))
+
+        # near_depth = self.head_camera_occlusion_near_depth_m
+        # near_pixels = int(np.count_nonzero(valid_mask & (depth < near_depth)))
+        # near_ratio = float(near_pixels / max(valid_pixels, 1))
+
+        # valid_ratio_ok = valid_ratio >= self.head_camera_occlusion_valid_ratio_min
+        # near_ratio_ok = near_ratio <= self.head_camera_occlusion_near_ratio_max
+        # ok = bool(valid_ratio_ok and near_ratio_ok)
+
+        # metrics = {
+        #     "enabled": True,
+        #     "checked": True,
+        #     "ok": ok,
+        #     "threshold": {
+        #         "valid_ratio_min": float(self.head_camera_occlusion_valid_ratio_min),
+        #         "near_ratio_max": float(self.head_camera_occlusion_near_ratio_max),
+        #         "near_depth_m": float(self.head_camera_occlusion_near_depth_m),
+        #     },
+        #     "measured": {
+        #         "total_pixels": total_pixels,
+        #         "valid_pixels": valid_pixels,
+        #         "valid_ratio": valid_ratio,
+        #         "near_pixels": near_pixels,
+        #         "near_ratio": near_ratio,
+        #     },
+        # }
+        ok, metrics = self._check_head_camera_visibility_internal()
+        self.head_camera_episode_record["head_camera_visibility_check"] = metrics
+        return ok, metrics
 
     def get_rgb(self) -> dict:
         rgba = self.get_rgba()

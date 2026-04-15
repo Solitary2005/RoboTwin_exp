@@ -98,6 +98,8 @@ class Base_Task(gym.Env):
         self.now_obs = {}
         self.take_action_cnt = 0
         self.eval_video_path = kwags.get("eval_video_save_dir", None)
+        self._camera_prev_left_ee_pos = None
+        self._camera_prev_right_ee_pos = None
 
         self.save_freq = kwags.get("save_freq")
         self.world_pcd = None
@@ -138,6 +140,18 @@ class Base_Task(gym.Env):
             raise UnStableError(
                 f'Objects is unstable in seed({kwags.get("seed", 0)}), unstable objects: {", ".join(unstable_list)}')
 
+        # Check head camera frustum occlusion after camera randomization and scene setup.
+        self.head_camera_visibility_ok = True
+        self.head_camera_visibility_info = {
+            "enabled": False,
+            "checked": False,
+            "ok": True,
+            "reason": "not_checked",
+        }
+        if hasattr(self, "cameras") and hasattr(self.cameras, "check_head_camera_visibility"):
+            self.scene.update_render()
+            self.head_camera_visibility_ok, self.head_camera_visibility_info = self.cameras.check_head_camera_visibility()
+            
         if self.eval_mode:
             with open(os.path.join(CONFIGS_PATH, "_eval_step_limit.yml"), "r") as f:
                 try:
@@ -154,6 +168,7 @@ class Base_Task(gym.Env):
             "wall_texture": self.wall_texture,
             "table_texture": self.table_texture,
         }
+        self.info["head_camera_visibility"] = self.head_camera_visibility_info
         self.info["info"] = {}
 
         self.stage_success_tag = False
@@ -430,6 +445,31 @@ class Base_Task(gym.Env):
             now_ambient_light = np.clip(np.array(now_ambient_light) + np.random.rand(3) * 0.2 - 0.1, 0, 1)
             self.scene.set_ambient_light(now_ambient_light)
         self.cameras.update_wrist_camera(self.robot.left_camera.get_pose(), self.robot.right_camera.get_pose())
+        if hasattr(self.cameras, "update_head_camera_dynamic"):
+            # self.cameras.update_head_camera_dynamic(frame_idx=self.FRAME_IDX)
+            left_pose = np.asarray(self.get_arm_pose("left"), dtype=np.float64)
+            right_pose = np.asarray(self.get_arm_pose("right"), dtype=np.float64)
+            left_pos = left_pose[:3]
+            right_pos = right_pose[:3]
+
+            dl = 0.0 if self._camera_prev_left_ee_pos is None else float(np.linalg.norm(left_pos - self._camera_prev_left_ee_pos))
+            dr = 0.0 if self._camera_prev_right_ee_pos is None else float(np.linalg.norm(right_pos - self._camera_prev_right_ee_pos))
+            self._camera_prev_left_ee_pos = left_pos.copy()
+            self._camera_prev_right_ee_pos = right_pos.copy()
+
+            motion_norm = getattr(self.cameras, "head_cam_dyn_motion_norm", 0.015)
+            motion_norm = max(float(motion_norm), 1e-6)
+            motion_intensity = float(np.clip((dl + dr) / motion_norm, 0.0, 1.0))
+
+            motion_signal = {
+                "left_ee_pos": left_pos.tolist(),
+                "right_ee_pos": right_pos.tolist(),
+                "focus_target": ((left_pos + right_pos) * 0.5).tolist(),
+                "motion_intensity": motion_intensity,
+                "left_motion": dl,
+                "right_motion": dr,
+            }
+            self.cameras.update_head_camera_dynamic(frame_idx=self.FRAME_IDX, motion_signal=motion_signal)
         self.scene.update_render()
 
     # =========================================================== Basic APIs ===========================================================
@@ -1476,7 +1516,7 @@ class Base_Task(gym.Env):
 
         return True  # TODO: maybe need try error
 
-    def take_action(self, action, action_type:Literal['qpos', 'ee']='qpos'):  # action_type: qpos or ee
+    def take_action(self, action, action_type:Literal['qpos', 'delta_qpos','ee']='qpos'):  # action_type: qpos or ee
         if self.take_action_cnt == self.step_lim or self.eval_success:
             return
 
@@ -1494,8 +1534,10 @@ class Base_Task(gym.Env):
         actions = np.array([action])
         left_jointstate = self.robot.get_left_arm_jointState()
         right_jointstate = self.robot.get_right_arm_jointState()
-        left_arm_dim = len(left_jointstate) - 1 if action_type == 'qpos' else 7
-        right_arm_dim = len(right_jointstate) - 1 if action_type == 'qpos' else 7
+        # left_arm_dim = len(left_jointstate) - 1 if action_type == 'qpos' else 7
+        # right_arm_dim = len(right_jointstate) - 1 if action_type == 'qpos' else 7
+        left_arm_dim = len(left_jointstate) - 1 if action_type in ['qpos', 'delta_qpos'] else 7
+        right_arm_dim = len(right_jointstate) - 1 if action_type in ['qpos', 'delta_qpos'] else 7
         current_jointstate = np.array(left_jointstate + right_jointstate)
 
         left_arm_actions, left_gripper_actions, left_current_qpos, left_path = (
@@ -1527,11 +1569,16 @@ class Base_Task(gym.Env):
         left_gripper_path = np.hstack((left_current_gripper, left_gripper_actions))
         right_gripper_path = np.hstack((right_current_gripper, right_gripper_actions))
 
-        if action_type == 'qpos':
+        # if action_type == 'qpos':
+        if action_type in ['qpos', 'delta_qpos']:
             left_current_qpos, right_current_qpos = (
                 current_jointstate[:left_arm_dim],
                 current_jointstate[left_arm_dim + 1:left_arm_dim + right_arm_dim + 1],
             )
+            if action_type == 'delta_qpos':
+                left_arm_actions = left_current_qpos.reshape(1, -1) + left_arm_actions
+                right_arm_actions = right_current_qpos.reshape(1, -1) + right_arm_actions
+                
             left_path = np.vstack((left_current_qpos, left_arm_actions))
             right_path = np.vstack((right_current_qpos, right_arm_actions))
 

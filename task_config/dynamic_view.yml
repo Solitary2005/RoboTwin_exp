@@ -1,0 +1,86 @@
+render_freq: 0
+episode_num: 50
+use_seed: false
+save_freq: 15
+embodiment: [aloha-agilex]
+language_num: 100
+domain_randomization:
+  random_background: false
+  cluttered_table: false
+  clean_background_rate: 1
+  random_head_camera_dis: 0 
+  random_table_height: 0
+  random_light: false
+  crazy_random_light_rate: 0
+camera:
+  head_camera_type: D435
+  wrist_camera_type: D435
+  collect_head_camera: true
+  collect_wrist_camera: true
+#camera random
+  enable_head_camera_random: true
+  head_cam_distance_scale_range: [0.8, 1.0] #c1 distance
+#c2 range
+  head_cam_azimuth_deg: 20
+  head_cam_elevation_deg: 10
+  head_cam_distance_ratio: 0.0
+#c3 angle
+  head_cam_yaw_deg: 10
+  head_cam_pitch_deg: 10
+  head_cam_roll_deg: 10
+#occ check
+  enable_head_camera_occlusion_check: true
+  head_camera_occlusion_valid_ratio_min: 0.2
+  head_camera_occlusion_near_ratio_max: 0.50
+  head_camera_occlusion_near_depth_m: 0.1
+# dynamic random
+  enable_head_camera_dynamic_random: true
+  head_cam_dyn_min_interval_frames: 10 #最小间隔，避免频繁
+  head_cam_dyn_max_interval_frames: 30 #最多 N 帧必须触发一次
+  head_cam_dyn_trigger_prob: 0.15  #触发概率
+#姿态扰动
+  head_cam_dyn_trans_step_max_m: [0.01, 0.01, 0.01]  #单次位移的最大增量
+  head_cam_dyn_rot_step_max_deg: [2.0, 2.0, 2.0]  #单次旋转的最大增量
+  head_cam_dyn_trans_abs_bound_m: [0.05, 0.05, 0.05]  #相对初始位置的绝对平移边界
+  head_cam_dyn_rot_abs_bound_deg: [8.0, 8.0, 8.0]  #对初始位姿的绝对旋转边界
+#平滑过渡
+  head_cam_dyn_transition_frames: 4 #平滑过渡使用帧
+  head_cam_dyn_smooth_profile: cosine
+  head_cam_dyn_anchor_mode: episode_init #围绕初始位姿的扰动
+#扰动位置遮挡的重采用
+  head_cam_dyn_occlusion_reject: true
+  head_cam_dyn_max_resample: 5
+ #动作跟随
+  head_cam_dyn_mode: action_follow  
+  head_cam_dyn_follow_alpha_min: 0.02 #最小跟随速度
+  head_cam_dyn_follow_alpha_max: 0.18 #最大跟随速度
+  head_cam_dyn_motion_norm: 0.015
+  head_cam_dyn_focus_z_bias: 0.0 #z轴偏置
+  head_cam_dyn_hand_weight_temperature: 0.03
+  head_cam_dyn_hand_weight_bias: 0.15  #左右手最小保底权重
+  head_cam_dyn_hand_weight_smooth: 0.35
+
+  head_cam_dyn_noise_trans_max_m: [0.002, 0.002, 0.001] #抖动平移最大幅度
+  head_cam_dyn_noise_rot_max_deg: [0.8, 0.8, 0.8]
+  head_cam_dyn_noise_update_prob: 0.10
+
+#位移变化超过该阈值才记录
+  head_cam_dyn_log_min_trans_m: 0.0015
+  head_cam_dyn_log_min_rot_deg: 0.5
+
+data_type:
+  rgb: true
+  third_view: false
+  depth: false
+  pointcloud: false
+  observer: false
+  endpose: true
+  qpos: true
+  mesh_segmentation: false
+  actor_segmentation: false
+pcd_down_sample_num: 1024
+pcd_crop: true
+save_path: ./data_view
+clear_cache_freq: 5
+collect_data: true
+eval_video_log: true

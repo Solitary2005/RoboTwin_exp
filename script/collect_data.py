@@ -58,6 +58,7 @@ def main(task_name=None, task_config=None):
             raise "missing embodiment files"
         return robot_file
 
+    #embodiment_type=3，可以使用异构的两个机械臂，比如["panda", "ur5e", 0.6]
     if len(embodiment_type) == 1:
         args["left_robot_file"] = get_embodiment_file(embodiment_type[0])
         args["right_robot_file"] = get_embodiment_file(embodiment_type[0])
@@ -127,6 +128,20 @@ def run(TASK_ENV, args):
         while suc_num < args["episode_num"]:
             try:
                 TASK_ENV.setup_demo(now_ep_num=suc_num, seed=epid, **args)
+                if not getattr(TASK_ENV, "head_camera_visibility_ok", True):
+                    print(f"simulate data episode {suc_num} fail! (seed = {epid})")
+                    print("Reason: head camera frustum is severely occluded")
+                    fail_num += 1
+                    TASK_ENV.close_env()
+
+                    if args["render_freq"]:
+                        TASK_ENV.viewer.close()
+
+                    epid += 1
+                    with open(os.path.join(args["save_path"], "seed.txt"), "w") as file:
+                        for sed in seed_list:
+                            file.write("%s " % sed)
+                    continue
                 TASK_ENV.play_once()
 
                 if TASK_ENV.plan_success and TASK_ENV.check_success():
@@ -189,6 +204,8 @@ def run(TASK_ENV, args):
         args["save_data"] = True
 
         clear_cache_freq = args["clear_cache_freq"]
+        camera_log_path = os.path.join(args["save_path"], "camera_params.txt")
+        dynamic_events_root = os.path.join(args["save_path"], "camera_dynamic_events")
 
         st_idx = 0
 
@@ -198,6 +215,11 @@ def run(TASK_ENV, args):
 
         while exist_hdf5(st_idx):
             st_idx += 1
+            
+        if not os.path.exists(camera_log_path):
+            with open(camera_log_path, "w", encoding="utf-8") as f:
+                f.write("# Camera parameters used in data collection\n")
+        os.makedirs(dynamic_events_root, exist_ok=True)
 
         for episode_idx in range(st_idx, args["episode_num"]):
             print(f"\033[34mTask name: {args['task_name']}\033[0m")
@@ -220,9 +242,51 @@ def run(TASK_ENV, args):
 
             info = TASK_ENV.play_once()
             info_db[f"episode_{episode_idx}"] = info
+            
+            camera_record = {}
+            if hasattr(TASK_ENV, "cameras") and hasattr(TASK_ENV.cameras, "get_head_camera_episode_record"):
+                camera_record = TASK_ENV.cameras.get_head_camera_episode_record()
 
             with open(info_file_path, "w", encoding="utf-8") as file:
                 json.dump(info_db, file, ensure_ascii=False, indent=4)
+            
+            with open(camera_log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n===== episode_{episode_idx} =====\n")
+                f.write(f"seed: {seed_list[episode_idx]}\n")
+                if len(camera_record) == 0:
+                    f.write("head_camera_record: {}\n")
+                else:
+                    f.write(json.dumps(camera_record, ensure_ascii=False, indent=2))
+                    f.write("\n")
+            
+            # Per-episode dynamic camera events for post-processing statistics
+            episode_dynamic_dir = os.path.join(dynamic_events_root, f"episode_{episode_idx}")
+            os.makedirs(episode_dynamic_dir, exist_ok=True)
+            episode_dynamic_path = os.path.join(episode_dynamic_dir, "camera_dynamic_events.jsonl")
+            dynamic_events = []
+            if isinstance(camera_record, dict):
+                dynamic_events = camera_record.get("head_camera_dynamic_events", [])
+
+            with open(episode_dynamic_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "type": "meta",
+                    "task_name": args.get("task_name"),
+                    "task_config": args.get("task_config"),
+                    "episode_idx": int(episode_idx),
+                    "seed": int(seed_list[episode_idx]),
+                    "event_count": int(len(dynamic_events)),
+                }, ensure_ascii=False) + "\n")
+
+                for event_idx, event in enumerate(dynamic_events):
+                    row = {
+                        "type": "event",
+                        "episode_idx": int(episode_idx),
+                        "seed": int(seed_list[episode_idx]),
+                        "event_idx": int(event_idx),
+                    }
+                    if isinstance(event, dict):
+                        row.update(event)
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
             TASK_ENV.close_env(clear_cache=((episode_idx + 1) % clear_cache_freq == 0))
             TASK_ENV.merge_pkl_to_hdf5_video()

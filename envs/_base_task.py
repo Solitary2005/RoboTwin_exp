@@ -171,8 +171,21 @@ class Base_Task(gym.Env):
         self.info["head_camera_visibility"] = self.head_camera_visibility_info
         self.info["info"] = {}
         
-        
-
+        # log cam
+        # cam_info = self.cameras.get_head_camera_info()
+        # self.cam_logger_save_dir = os.path.join(self.eval_video_path, "cam_info.txt")
+        # with open(self.cam_logger_save_dir, "a") as f:
+        #     f.write("=========== Cam Log ==========\n")
+        #     f.write(json.dumps(cam_info, indent=4, ensure_ascii=False))
+        #     f.write("\n")
+        # cam_json_path = os.path.join(self.eval_video_path, "_cam_info.json")
+        # with open(cam_json_path, "a", encoding="utf-8") as f:
+        #     f.write(json.dumps(cam_info, ensure_ascii=False) + "\n")
+        if kwags.get("record_cam_info", False):
+            cam_info = self.cameras.get_head_camera_info()
+            cam_json_path = os.path.join(self.eval_video_path, "_cam_info.json")
+            with open(cam_json_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(cam_info, ensure_ascii=False) + "\n")
         self.stage_success_tag = False
 
     def check_stable(self):

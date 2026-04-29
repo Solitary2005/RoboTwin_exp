@@ -7,12 +7,12 @@ save_freq: 15
 embodiment: [aloha-agilex]
 language_num: 100
 domain_randomization:
-  random_background: true
-  cluttered_table: true
+  random_background: false
+  cluttered_table: false
   clean_background_rate: 0.02
   random_head_camera_dis: 0.5
   random_table_height: 0.03
-  random_light: true
+  random_light: false
   crazy_random_light_rate: 0.02
 camera:
   head_camera_type: D435
@@ -20,7 +20,7 @@ camera:
   collect_head_camera: true
   collect_wrist_camera: true
 
-  enable_head_camera_random: false
+  enable_head_camera_random: true
   head_cam_distance_scale_range: [0.85, 1.0]
 
   head_cam_azimuth_deg: 10

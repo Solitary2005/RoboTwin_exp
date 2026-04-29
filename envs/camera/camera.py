@@ -493,7 +493,7 @@ class Camera:
                     # )
             else:
                 # camera, sensor_camera, camera_config = create_camera(camera_info)
-                camera, camera_config, self.cam_random_params = create_camera(camera_info)
+                camera, camera_config = create_camera(camera_info)
                 self.static_camera_list.append(camera)
                 self.static_camera_name.append(camera_info["name"])
                 # self.static_sensor_camera_list.append(sensor_camera)
@@ -581,6 +581,9 @@ class Camera:
             "p": np.asarray(pose.p, dtype=np.float64).copy(),
             "q": np.asarray(pose.q, dtype=np.float64).copy(),
         }
+    
+    def get_head_camera_info(self):
+        return self.head_camera_episode_record
 
     def _normalize3(self, value, cast=float):
         if isinstance(value, (list, tuple, np.ndarray)):
